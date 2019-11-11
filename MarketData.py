@@ -3,6 +3,33 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import datetime
 import csv
+import os.path
+
+
+def AddToFile(stock_name, mkt_data):
+
+    close_price = mkt_data[stock_name + ".L"].Close.tail(1)
+
+    df = pd.DataFrame({'Date': [close_price.index.values[0]],
+                       'Closing Price': [close_price.iat[0]],
+                       'Cash': [0]})
+
+    df.set_index('Date', inplace=True)
+
+    print(df)
+
+
+    if(os.path.exists("StockTracker/" + stock_name + ".csv")):
+        with open("StockTracker/" + stock_name + ".csv", 'a+') as writeFile:
+            df.to_csv(writeFile, header=False)
+        writeFile.close()
+        return 1
+    else:
+        with open("StockTracker/" + stock_name + ".csv", 'a+') as writeFile:
+            df.to_csv(writeFile, header=True)
+            writeFile.close()
+        return 0
+
 
 ##################### get stock info for all 6 tickers #########################################
 
@@ -23,13 +50,13 @@ for stock in stocks:
 
 mkt_data = yf.download(allstocks, group_by = 'ticker', start=d_0, end=d_1)
 
-# reading and appending to file
 
+
+# reading and appending to file
 for stock in stocks:
-    close_price = mkt_data[stock + ".L"].Close.tail(1)
-    with open("StockTracker/" + stock + ".csv", 'a+') as writeFile:
-        close_price.to_csv(writeFile, header=True)
-    writeFile.close()
+    AddToFile(stock, mkt_data)
+
+
 
 
 
