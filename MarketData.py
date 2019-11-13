@@ -1,60 +1,134 @@
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
-import datetime
+from datetime import datetime
 import csv
 import os.path
+import math
+import numpy as np
+import pytz
 
 
-def AddToFile(stock_name, mkt_data):
+def converttimezone(latest_time, tzfrom, tzto):
+    old_timezone = pytz.timezone(tzfrom)
+    new_timezone = pytz.timezone(tzto)
+    my_timestamp_in_new_timezone = old_timezone.localize(latest_time).astimezone(new_timezone)
+    return my_timestamp_in_new_timezone
 
-    close_price = mkt_data[stock_name + ".L"].Close.tail(1)
+def parsedata(stocks, currency):
+    #loop through all stocks and get 30 min of last day
+    for i in range(len(stocks)):
+        ticker_data = yf.Ticker(stocks[i]).history(period="1d", interval="1m")
+        close_price = ticker_data.Close.tail(1)
 
-    df = pd.DataFrame({'Date': [close_price.index.values[0]],
-                       'Closing Price': [close_price.iat[0]],
-                       'Cash': [0]})
+        df = pd.DataFrame({'Date': [close_price.index.values[0]],
+                           'Bought Price': [close_price.iat[0]],
+                           'Shares': [0],
+                           'Cash Available': [0],
+                           'Net Invested': [0]})
 
-    df.set_index('Date', inplace=True)
+        df.set_index('Date', inplace=True)
+        fx_rate = ccyconversion(currency[i], "USD")
+        df1 = df.copy()
+        bought_price_loc = df1.columns.get_loc('Bought Price')
+        bought_price = df1.iloc[0, bought_price_loc]
+        bought_price_fx = fx_rate * bought_price
+        df1.iloc[0, bought_price_loc] = bought_price_fx
+        buystock(df1, stocks[i])
 
-    print(df)
+    return 1
 
 
-    if(os.path.exists("StockTracker/" + stock_name + ".csv")):
-        with open("StockTracker/" + stock_name + ".csv", 'a+') as writeFile:
-            df.to_csv(writeFile, header=False)
+
+
+def buystock(df, stock_name):
+
+    path = "StockTracker/" + "Ledger_" + stock_name + ".csv"
+    initial_injection = 10000
+    daily_injection = 1000
+
+    if os.path.exists(path):
+        df_read = pd.read_csv(path)
+        df_read.set_index('Date', inplace=True)
+        df1 = injectcash(df_read.tail(1), daily_injection)
+        cash_left_loc = df1.columns.get_loc('Cash Available')
+        cash_left = df1.iloc[0, cash_left_loc]
+        net_invested_loc = df1.columns.get_loc('Net Invested')
+        net_invested = df1.iloc[0, net_invested_loc]
+
+        df.iloc[0, cash_left_loc] = cash_left
+        df.iloc[0, net_invested_loc] = net_invested
+        df_updated = sharestobuy(df)
+
+
+        with open(path, 'a+') as writeFile:
+            df_updated.to_csv(writeFile, header=False, float_format='%.2f')
         writeFile.close()
-        return 1
+        print("Bought " + stock_name)
     else:
-        with open("StockTracker/" + stock_name + ".csv", 'a+') as writeFile:
-            df.to_csv(writeFile, header=True)
+        df1 = injectcash(df, initial_injection)
+        df_updated = sharestobuy(df1)
+        with open(path, 'a+') as writeFile:
+            df_updated.to_csv(writeFile, header=True, float_format='%.2f')
             writeFile.close()
-        return 0
+        print("Bought " + stock_name)
+    return 1
 
 
-##################### get stock info for all 6 tickers #########################################
-
-n_days = 120
-today = datetime.date.today()
-n_days_ago = today - datetime.timedelta(days=n_days)
-
-d_1 = today.strftime("%Y-%m-%d")
-d_0 = n_days_ago.strftime("%Y-%m-%d")
-
-#GSK PURETECH OXFORD BIOMED INDIVIOR GENUS DECHPRA PHARM
-stocks = ["GSK", "PRTC", "OXB", "INDV", "GNS", "DPH"]
-# formatting stocks into 1 string for data download
-
-allstocks = ""
-for stock in stocks:
-    allstocks = allstocks + stock + ".L" + " "
-
-mkt_data = yf.download(allstocks, group_by = 'ticker', start=d_0, end=d_1)
+def injectcash(df, cash_in):
+    df1 = df.copy()
+    cash_left_loc = df1.columns.get_loc('Cash Available')
+    cash_left = df1.iloc[0,cash_left_loc]
+    cash_net = cash_left + cash_in
+    df1.iloc[0,cash_left_loc] = cash_net
+    return df1
 
 
+def sharestobuy(df):
+    df1 = df.copy()
+    cash_left_loc = df1.columns.get_loc('Cash Available')
+    cash_left = df1.iloc[0, cash_left_loc]
+    bought_price_loc = df1.columns.get_loc('Bought Price')
+    bought_price = df1.iloc[0, bought_price_loc]
+    shares_loc = df1.columns.get_loc('Shares')
+    shares = math.floor(cash_left / bought_price)
+    net_invested_loc = df1.columns.get_loc('Net Invested')
+    net_invested = df1.iloc[0, net_invested_loc]
 
-# reading and appending to file
-for stock in stocks:
-    AddToFile(stock, mkt_data)
+    left_over_cash = cash_left - shares*bought_price
+
+    if(shares < 1):
+        df1.iloc[0,net_invested_loc] = net_invested
+        df1.iloc[0, cash_left_loc] = cash_left
+        df1.iloc[0, shares_loc] = 0
+    else:
+        df1.iloc[0,net_invested_loc] = net_invested + cash_left - left_over_cash
+        df1.iloc[0, cash_left_loc] = left_over_cash
+        df1.iloc[0, shares_loc] = shares
+
+    return df1
+
+
+def ccyconversion(ccy_from, ccy_to):
+    fx_pair = ccy_from + ccy_to + "=X"
+    if ccy_to != ccy_from:
+        fx_data = yf.Ticker(fx_pair).history(period="1d", interval="1m")
+        fx_close = fx_data.Close.tail(1).iat[0]
+    else:
+        fx_close = 1
+    return fx_close
+
+
+def main():
+    print("Buying session begins: ")
+    # healthcare stocks NYSE, HKEX, LSE
+    stocks = ["GEN", "CHCT", "1521.HK", "2616.HK", "DPH.L", "GSK.L"]
+    currency = ["USD", "USD", "HKD", "HKD", "GBP", "GBP", ]
+    parsedata(stocks, currency)
+
+
+if __name__ == "__main__":
+    main()
 
 
 
